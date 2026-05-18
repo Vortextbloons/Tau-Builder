@@ -1,0 +1,35 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Tau Builder RP",
+    "description": "A Minecraft Bedrock addon for Tau Builder",
+    "uuid": "2f87651f-94c3-465f-9e38-104467c15160",
+    "version": [
+      1,
+      0,
+      0
+    ],
+    "min_engine_version": [
+      1,
+      21,
+      60
+    ]
+  },
+  "modules": [
+    {
+      "type": "resources",
+      "uuid": "efeaf165-30f3-4378-9149-1a4a033de1b3",
+      "version": [
+        1,
+        0,
+        0
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "uuid": "4773b963-7f47-4063-938c-692b44bf9bc5",
+      "version": "1.0.0"
+    }
+  ]
+}

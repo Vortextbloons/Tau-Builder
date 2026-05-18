@@ -1,0 +1,18 @@
+{
+  "dependencies": {
+    "@minecraft/server": "^2.8.0-beta",
+    "@minecraft/server-ui": "^2.1.0-beta"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9",
+    "typescript": "^5.9.2"
+  },
+  "name": "tau builder",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2020 --outfile=Tau_Builder_BP/scripts/main.js --external:@minecraft/server --external:@minecraft/server-ui && node scripts/deploy.js dev",
+    "deploy:dev": "node scripts/deploy.js dev",
+    "deploy:prod": "node scripts/deploy.js prod",
+    "typecheck": "tsc --noEmit"
+  }
+}

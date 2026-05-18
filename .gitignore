@@ -1,0 +1,8 @@
+node_modules/
+dist/
+temp_release/
+.env
+*.mcaddon
+*.mcpack
+*.zip
+*.log
