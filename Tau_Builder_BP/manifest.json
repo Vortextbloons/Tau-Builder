@@ -1,8 +1,8 @@
 {
   "format_version": 2,
   "header": {
-    "name": "Tau Builder",
-    "description": "A Minecraft Bedrock addon for Tau Builder",
+    "name": "Tau Builder 1.0.0 Beta",
+    "description": "Performance-focused world editing tools for Bedrock",
     "uuid": "4773b963-7f47-4063-938c-692b44bf9bc5",
     "version": [
       1,
@@ -11,8 +11,8 @@
     ],
     "min_engine_version": [
       1,
-      21,
-      60
+      26,
+      20
     ]
   },
   "modules": [

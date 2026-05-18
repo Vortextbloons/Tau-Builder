@@ -4,3 +4,5 @@ declare var console: {
   error(...args: any[]): void;
   debug(...args: any[]): void;
 };
+
+declare module "@minecraft/server-ui";

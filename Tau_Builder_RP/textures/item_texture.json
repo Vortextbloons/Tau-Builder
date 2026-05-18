@@ -1,0 +1,21 @@
+{
+  "resource_pack_name": "tau_builder",
+  "texture_name": "atlas.items",
+  "texture_data": {
+    "selection_wand": {
+      "textures": "textures/items/selection_wand"
+    },
+    "menu_tool": {
+      "textures": "textures/items/menu_tool"
+    },
+    "brush_tool": {
+      "textures": "textures/items/brush_tool"
+    },
+    "clipboard_tool": {
+      "textures": "textures/items/clipboard_tool"
+    },
+    "inspector_tool": {
+      "textures": "textures/items/inspector_tool"
+    }
+  }
+}

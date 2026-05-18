@@ -1,5 +1,18 @@
-import { world, system } from "@minecraft/server";
+import { system, world } from "@minecraft/server";
+import { TauBuilder } from "./taubuilder";
 
-console.warn("Script loaded for version 2.8.0-beta.1.26.21-stable");
+const app = new TauBuilder();
 
-// TypeScript entry point
+system.beforeEvents.startup.subscribe((event) => {
+  app.startup(event);
+});
+
+system.runInterval(() => {
+  app.tick();
+}, 1);
+
+world.afterEvents.playerLeave.subscribe((event) => {
+  app.onPlayerLeave(event.playerId);
+});
+
+console.warn("Tau Builder beta systems loaded for 1.26.20+");

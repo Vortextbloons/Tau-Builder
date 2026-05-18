@@ -1,0 +1,22 @@
+{
+  "format_version": "1.21.20",
+  "minecraft:item": {
+    "description": {
+      "identifier": "taubuilder:brush_tool",
+      "menu_category": {
+        "category": "equipment",
+        "group": "itemGroup.name.tools"
+      }
+    },
+    "components": {
+      "minecraft:max_stack_size": 1,
+      "minecraft:icon": "brush_tool",
+      "minecraft:display_name": {
+        "value": "item.taubuilder.brush_tool.name"
+      },
+      "minecraft:custom_components": [
+        "taubuilder:brush_tool_component"
+      ]
+    }
+  }
+}
