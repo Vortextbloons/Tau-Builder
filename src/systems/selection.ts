@@ -1,7 +1,8 @@
 import type { Player, Vector3 } from "@minecraft/server";
+import { CONFIG } from "../config/constants";
 import { StateStore } from "../core/state";
 import type { Bounds } from "../types";
-import { boundsFromPositions, cloneVector3 } from "../utils/vector";
+import { boundsFromPositions, cloneVector3, splitBoundsIntoChunks } from "../utils/vector";
 
 export class SelectionService {
   constructor(private readonly state: StateStore) {}
@@ -10,6 +11,7 @@ export class SelectionService {
     const session = this.state.get(player);
     session.selection.dimensionId = player.dimension.id;
     session.selection.pos1 = cloneVector3(position);
+    session.selection.nextWandPosition = 2;
     return `Pos1 set to ${position.x}, ${position.y}, ${position.z}`;
   }
 
@@ -17,7 +19,14 @@ export class SelectionService {
     const session = this.state.get(player);
     session.selection.dimensionId = player.dimension.id;
     session.selection.pos2 = cloneVector3(position);
+    session.selection.nextWandPosition = 1;
     return `Pos2 set to ${position.x}, ${position.y}, ${position.z}`;
+  }
+
+  setWandPosition(player: Player, position: Vector3): string {
+    const session = this.state.get(player);
+    const which = player.isSneaking ? 2 : session.selection.nextWandPosition ?? 1;
+    return which === 1 ? this.setPos1(player, position) : this.setPos2(player, position);
   }
 
   clear(player: Player): string {
@@ -42,6 +51,8 @@ export class SelectionService {
       return "Selection incomplete. Set both positions first.";
     }
 
-    return `Selection ${bounds.min.x},${bounds.min.y},${bounds.min.z} -> ${bounds.max.x},${bounds.max.y},${bounds.max.z} (${bounds.volume} blocks)`;
+    const chunkCount = splitBoundsIntoChunks(bounds).length;
+    const mode = bounds.volume >= CONFIG.chunkedOperationThreshold ? `chunked (${chunkCount} chunks)` : "direct";
+    return `Selection ${bounds.min.x},${bounds.min.y},${bounds.min.z} -> ${bounds.max.x},${bounds.max.y},${bounds.max.z} (${bounds.volume} blocks, ${mode})`;
   }
 }

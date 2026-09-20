@@ -27,17 +27,25 @@ export class TauBuilder {
   readonly ui = new UiService(this);
 
   startup(event: StartupEvent): void {
+    this.resetRuntimeState();
     registerCommands(event.customCommandRegistry, this);
     registerItemComponents(event.itemComponentRegistry, this);
   }
 
   tick(): void {
-    this.queue.tick();
-    this.preview.tick();
+    const players = world.getPlayers();
+    this.queue.tick(players);
+    this.preview.tick(players);
   }
 
   onPlayerLeave(playerId: string): void {
     this.state.remove(playerId);
+  }
+
+  resetRuntimeState(): void {
+    this.queue.clear();
+    this.logger.clear();
+    this.state.clearAll();
   }
 
   tell(player: Player, message: string): void {
@@ -71,26 +79,23 @@ export class TauBuilder {
   queueSet(player: Player, blockId: string): string {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertSelectionWithinLimit(player, bounds.volume);
     return this.queue.enqueueSet(player, bounds, blockId, this.state.get(player).mask);
   }
 
   queueReplace(player: Player, from: string, to: string): string {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertSelectionWithinLimit(player, bounds.volume);
     return this.queue.enqueueReplace(player, bounds, from, to, this.state.get(player).mask);
   }
 
   copy(player: Player, cut: boolean): string {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertClipboardWithinLimit(player, bounds.volume);
     const clipboard = this.clipboard.copy(player);
     if (cut) {
       this.queue.enqueueSet(player, bounds, "minecraft:air", undefined);
     }
-    return `${cut ? "Cut" : "Copied"} ${clipboard.blocks.length} blocks.`;
+    return `${cut ? "Cut" : "Copied"} ${clipboard.totalBlocks} blocks.`;
   }
 
   paste(player: Player, origin?: Vector3): string {
@@ -128,9 +133,6 @@ export class TauBuilder {
     }
     const brush = this.brush.get(player);
     const points = this.brush.samplePoints(targetBlock.location, brush.radius);
-    if (points.length > CONFIG.maxSelectionBlocks) {
-      throw new Error(`Brush would affect ${points.length} blocks. Limit is ${CONFIG.maxSelectionBlocks}.`);
-    }
     return this.queue.enqueuePoints(player, `brush ${brush.type}`, points, { typeId: brush.material, states: {}, waterlogged: false }, brush.replaceTarget, this.state.get(player).mask);
   }
 
@@ -176,15 +178,4 @@ export class TauBuilder {
     return bounds;
   }
 
-  private assertSelectionWithinLimit(player: Player, volume: number): void {
-    if (volume > CONFIG.maxSelectionBlocks) {
-      throw new Error(`Selection too large: ${volume}. Limit is ${CONFIG.maxSelectionBlocks}.`);
-    }
-  }
-
-  private assertClipboardWithinLimit(player: Player, blocks: number): void {
-    if (blocks > CONFIG.maxClipboardBlocks) {
-      throw new Error(`Clipboard too large: ${blocks}. Limit is ${CONFIG.maxClipboardBlocks}.`);
-    }
-  }
 }

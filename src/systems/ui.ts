@@ -35,12 +35,17 @@ export class UiService {
       else if (response.selection === 3) await this.showBrush(player);
       else if (response.selection === 4) await this.showHistory(player);
       else if (response.selection === 5) await this.showLogs(player);
-      else if (response.selection === 6) this.app.tell(player, this.app.preview.toggle(player));
+      else if (response.selection === 6) this.app.tell(player, this.safeRun(() => this.app.preview.toggle(player)));
       else return;
     }
   }
 
   async showSelection(player: Player): Promise<void> {
+    if (!this.app.permissions.isOperator(player)) {
+      this.app.tell(player, "Operator permissions required.");
+      return;
+    }
+
     while (true) {
       const response = await this.showAction(
         new ActionFormData()
@@ -48,25 +53,32 @@ export class UiService {
           .body(this.app.selection.describe(player))
           .button("Set Pos1")
           .button("Set Pos2")
+          .button("Set Stone")
+          .button("Set Air")
+          .button("Custom Set")
           .button("Clear")
           .button("Back"),
         player,
       );
       if (!response) return;
       const anchor = getPlayerAnchorLocation(player);
-      if (response.selection === 0) this.app.tell(player, this.app.selection.setPos1(player, anchor));
-      else if (response.selection === 1) this.app.tell(player, this.app.selection.setPos2(player, anchor));
-      else if (response.selection === 2) this.app.tell(player, this.app.selection.clear(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.selection.setPos1(player, anchor)));
+      else if (response.selection === 1) this.app.tell(player, this.safeRun(() => this.app.selection.setPos2(player, anchor)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:stone")));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:air")));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.promptSetBlock(player)));
+      else if (response.selection === 5) this.app.tell(player, this.safeRun(() => this.app.selection.clear(player)));
       else return;
     }
   }
 
   async showEdit(player: Player): Promise<void> {
     while (true) {
+      const hasSelection = !!this.app.selection.getBounds(player);
       const response = await this.showAction(
         new ActionFormData()
           .title("Edit")
-          .body(this.currentMaskText(player))
+          .body(`${this.currentMaskText(player)}\n${hasSelection ? "Selection ready." : "Selection incomplete."}`)
           .button("Set Stone")
           .button("Set Air")
           .button("Replace Dirt -> Grass")
@@ -78,13 +90,17 @@ export class UiService {
         player,
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.queueSet(player, "minecraft:stone"));
-      else if (response.selection === 1) this.app.tell(player, this.app.queueSet(player, "minecraft:air"));
-      else if (response.selection === 2) this.app.tell(player, this.app.queueReplace(player, "minecraft:dirt", "minecraft:grass_block"));
-      else if (response.selection === 3) this.app.tell(player, await this.promptSetBlock(player));
-      else if (response.selection === 4) this.app.tell(player, await this.promptReplace(player));
-      else if (response.selection === 5) this.app.tell(player, await this.promptMask(player));
-      else if (response.selection === 6) this.app.tell(player, this.app.clearMask(player));
+      if (!hasSelection && response.selection <= 4) {
+        this.app.tell(player, "Selection incomplete. Use Selection first.");
+        continue;
+      }
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:stone")));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:air")));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.queueReplace(player, "minecraft:dirt", "minecraft:grass_block")));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.promptSetBlock(player)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.promptReplace(player)));
+      else if (response.selection === 5) this.app.tell(player, await this.safeRunAsync(() => this.promptMask(player)));
+      else if (response.selection === 6) this.app.tell(player, await this.safeRunAsync(() => this.app.clearMask(player)));
       else return;
     }
   }
@@ -94,7 +110,7 @@ export class UiService {
       const response = await this.showAction(
         new ActionFormData()
           .title("Clipboard")
-          .body("Copy, paste, transform, save, and load.")
+          .body(this.app.clipboard.describe(player))
           .button("Copy")
           .button("Cut")
           .button("Paste")
@@ -108,15 +124,15 @@ export class UiService {
         player,
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.copy(player, false));
-      else if (response.selection === 1) this.app.tell(player, this.app.copy(player, true));
-      else if (response.selection === 2) this.app.tell(player, this.app.paste(player));
-      else if (response.selection === 3) this.app.tell(player, this.app.rotateClipboard(player, 90));
-      else if (response.selection === 4) this.app.tell(player, this.app.flipClipboard(player, "x"));
-      else if (response.selection === 5) this.app.tell(player, await this.promptSchematicAction(player, "save"));
-      else if (response.selection === 6) this.app.tell(player, await this.promptSchematicAction(player, "load"));
-      else if (response.selection === 7) this.app.tell(player, await this.promptSchematicAction(player, "delete"));
-      else if (response.selection === 8) this.app.tell(player, this.app.clipboard.listSchematics().join(", ") || "No schematics saved.");
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.app.copy(player, false)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.app.copy(player, true)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.paste(player)));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.app.rotateClipboard(player, 90)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.app.flipClipboard(player, "x")));
+      else if (response.selection === 5) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "save")));
+      else if (response.selection === 6) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "load")));
+      else if (response.selection === 7) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "delete")));
+      else if (response.selection === 8) this.app.tell(player, this.safeRun(() => this.app.clipboard.listSchematics().join(", ") || "No schematics saved."));
       else return;
     }
   }
@@ -137,11 +153,11 @@ export class UiService {
         player,
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, await this.promptBrushSphere(player));
-      else if (response.selection === 1) this.app.tell(player, await this.promptBrushReplace(player));
-      else if (response.selection === 2) this.app.tell(player, this.app.applyBrush(player));
-      else if (response.selection === 3) this.app.tell(player, await this.promptBrushRadius(player));
-      else if (response.selection === 4) this.app.tell(player, this.app.brush.clear(player));
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushSphere(player)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushReplace(player)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.applyBrush(player)));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushRadius(player)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.app.brush.clear(player)));
       else return;
     }
   }
@@ -160,10 +176,10 @@ export class UiService {
         player,
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.queue.undo(player));
-      else if (response.selection === 1) this.app.tell(player, this.app.queue.redo(player));
-      else if (response.selection === 2) this.app.tell(player, this.app.queue.getStatus());
-      else if (response.selection === 3) this.app.tell(player, this.app.preview.toggle(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.queue.undo(player)));
+      else if (response.selection === 1) this.app.tell(player, this.safeRun(() => this.app.queue.redo(player)));
+      else if (response.selection === 2) this.app.tell(player, this.safeRun(() => this.app.queue.getStatus()));
+      else if (response.selection === 3) this.app.tell(player, this.safeRun(() => this.app.preview.toggle(player)));
       else return;
     }
   }
@@ -181,9 +197,9 @@ export class UiService {
         player,
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.inspect(player));
-      else if (response.selection === 1) this.app.tell(player, await this.promptRollbackPlayer(player));
-      else if (response.selection === 2) this.app.tell(player, await this.promptRollbackArea(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.inspect(player)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.promptRollbackPlayer(player)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.promptRollbackArea(player)));
       else return;
     }
   }
@@ -194,16 +210,28 @@ export class UiService {
   }
 
   private async promptSetBlock(player: Player): Promise<string> {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
+    const session = this.app.state.get(player);
     const response = await this.showModal(
-      new ModalFormData().title("Custom Set").textField("Block id", "minecraft:stone", { defaultValue: "minecraft:stone" }),
+      new ModalFormData()
+        .title("Custom Set")
+        .textField("Block id", session.lastSetBlock, { defaultValue: session.lastSetBlock }),
       player,
     );
     if (!response || response.canceled) return "Cancelled.";
     const [blockId] = response.formValues as [string];
-    return blockId?.trim() ? this.app.queueSet(player, blockId.trim()) : "No block selected.";
+    const trimmed = blockId?.trim();
+    if (!trimmed) return "No block selected.";
+    session.lastSetBlock = trimmed;
+    return this.safeRun(() => this.app.queueSet(player, trimmed));
   }
 
   private async promptReplace(player: Player): Promise<string> {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
     const response = await this.showModal(
       new ModalFormData()
         .title("Custom Replace")
@@ -213,7 +241,7 @@ export class UiService {
     );
     if (!response || response.canceled) return "Cancelled.";
     const [from, to] = response.formValues as [string, string];
-    return from?.trim() && to?.trim() ? this.app.queueReplace(player, from.trim(), to.trim()) : "Invalid replace inputs.";
+    return from?.trim() && to?.trim() ? this.safeRun(() => this.app.queueReplace(player, from.trim(), to.trim())) : "Invalid replace inputs.";
   }
 
   private async promptMask(player: Player): Promise<string> {
@@ -227,6 +255,9 @@ export class UiService {
   }
 
   private async promptSchematicAction(player: Player, action: "save" | "load" | "delete"): Promise<string> {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
     const response = await this.showModal(
       new ModalFormData().title(`Schematic ${action}`).textField("Name", "house", { defaultValue: "house" }),
       player,
@@ -234,9 +265,9 @@ export class UiService {
     if (!response || response.canceled) return "Cancelled.";
     const [name] = response.formValues as [string];
     if (!name?.trim()) return "No schematic name entered.";
-    if (action === "save") return this.app.clipboard.saveSchematic(player, name.trim());
-    if (action === "load") return this.app.placeSchematic(player, name.trim());
-    return this.app.clipboard.deleteSchematic(name.trim());
+    if (action === "save") return this.safeRun(() => this.app.clipboard.saveSchematic(player, name.trim()));
+    if (action === "load") return this.safeRun(() => this.app.placeSchematic(player, name.trim()));
+    return this.safeRun(() => this.app.clipboard.deleteSchematic(name.trim()));
   }
 
   private async promptBrushSphere(player: Player): Promise<string> {
@@ -314,6 +345,22 @@ export class UiService {
       return response;
     } catch {
       return undefined;
+    }
+  }
+
+  private safeRun(action: () => string): string {
+    try {
+      return action();
+    } catch (error) {
+      return error instanceof Error ? error.message : "Action failed.";
+    }
+  }
+
+  private async safeRunAsync(action: () => string | Promise<string>): Promise<string> {
+    try {
+      return await action();
+    } catch (error) {
+      return error instanceof Error ? error.message : "Action failed.";
     }
   }
 }

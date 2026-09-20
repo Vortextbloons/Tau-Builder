@@ -31,6 +31,26 @@ export function snapshotBlock(block: Block): BlockSnapshot {
   };
 }
 
+export function snapshotsEqual(a: BlockSnapshot, b: BlockSnapshot): boolean {
+  if (a.typeId !== b.typeId || a.waterlogged !== b.waterlogged) {
+    return false;
+  }
+
+  const aKeys = Object.keys(a.states);
+  const bKeys = Object.keys(b.states);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+
+  for (const key of aKeys) {
+    if (!(key in b.states) || a.states[key] !== b.states[key]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 export function resolveSnapshot(snapshot: BlockSnapshot): BlockPermutation {
   return BlockPermutation.resolve(snapshot.typeId, snapshot.states as BlockStates as never);
 }

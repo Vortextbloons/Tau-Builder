@@ -1,5 +1,9 @@
 export const PREFIX = "taubuilder";
 
+export const PACK_NAME = "Tau Builder";
+export const PACK_VERSION = "1.0.1 Beta";
+export const CREATOR = "RCodE777";
+
 export const ITEM_IDS = {
   selectionWand: `${PREFIX}:selection_wand`,
   menuTool: `${PREFIX}:menu_tool`,
@@ -28,10 +32,16 @@ export const CONFIG = {
   globalBlocksPerTick: 1200,
   maxClipboardBlocks: 180000,
   maxUndoEntries: 12,
+  maxUndoBlocks: 250000,
   maxLogs: 96,
   maxChangesPerLogPreview: 8,
   maxBrushRadius: 32,
   maxSelectionBlocks: 250000,
+  chunkSizeX: 16,
+  chunkSizeY: 32,
+  chunkSizeZ: 16,
+  maxChunkLoadChecksPerTick: 64,
+  chunkedOperationThreshold: 32768,
 } as const;
 
 export const STRUCTURE_PREFIX = `${PREFIX}:schem_`;

@@ -1,13 +1,13 @@
 {
   "format_version": 2,
   "header": {
-    "name": "Tau Builder RP 1.0.0 Beta",
+    "name": "Tau Builder RP 1.0.1 Beta",
     "description": "Resource pack for Tau Builder tools",
     "uuid": "2f87651f-94c3-465f-9e38-104467c15160",
     "version": [
       1,
       0,
-      0
+      1
     ],
     "min_engine_version": [
       1,
@@ -22,7 +22,7 @@
       "version": [
         1,
         0,
-        0
+        1
       ]
     }
   ],

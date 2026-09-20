@@ -3,10 +3,16 @@ var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { en
 var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
 // src/main.ts
-import { system, world as world5 } from "@minecraft/server";
+import { system as system2, world as world6 } from "@minecraft/server";
+
+// src/taubuilder.ts
+import { world as world5 } from "@minecraft/server";
 
 // src/config/constants.ts
 var PREFIX = "taubuilder";
+var PACK_NAME = "Tau Builder";
+var PACK_VERSION = "1.0.1 Beta";
+var CREATOR = "RCodE777";
 var ITEM_IDS = {
   selectionWand: `${PREFIX}:selection_wand`,
   menuTool: `${PREFIX}:menu_tool`,
@@ -21,21 +27,22 @@ var COMPONENT_IDS = {
   clipboardTool: `${PREFIX}:clipboard_tool_component`,
   inspectorTool: `${PREFIX}:inspector_tool_component`
 };
-var PARTICLES = {
-  selection: "minecraft:colored_flame_particle",
-  clipboard: "minecraft:colored_flame_particle",
-  brush: "minecraft:colored_flame_particle"
-};
 var CONFIG = {
   maxQueueLength: 12,
   previewInterval: 8,
   globalBlocksPerTick: 1200,
   maxClipboardBlocks: 18e4,
   maxUndoEntries: 12,
+  maxUndoBlocks: 25e4,
   maxLogs: 96,
   maxChangesPerLogPreview: 8,
   maxBrushRadius: 32,
-  maxSelectionBlocks: 25e4
+  maxSelectionBlocks: 25e4,
+  chunkSizeX: 16,
+  chunkSizeY: 32,
+  chunkSizeZ: 16,
+  maxChunkLoadChecksPerTick: 64,
+  chunkedOperationThreshold: 32768
 };
 var STRUCTURE_PREFIX = `${PREFIX}:schem_`;
 
@@ -126,6 +133,23 @@ function makeBoundsFromPoints(dimensionId, points) {
     volume: points.length
   };
 }
+function splitBoundsIntoChunks(bounds, chunkSize = { x: CONFIG.chunkSizeX, y: CONFIG.chunkSizeY, z: CONFIG.chunkSizeZ }) {
+  const chunks = [];
+  for (let y = bounds.min.y; y <= bounds.max.y; y += chunkSize.y) {
+    for (let z = bounds.min.z; z <= bounds.max.z; z += chunkSize.z) {
+      for (let x = bounds.min.x; x <= bounds.max.x; x += chunkSize.x) {
+        const min = { x, y, z };
+        const max = {
+          x: Math.min(x + chunkSize.x - 1, bounds.max.x),
+          y: Math.min(y + chunkSize.y - 1, bounds.max.y),
+          z: Math.min(z + chunkSize.z - 1, bounds.max.z)
+        };
+        chunks.push(boundsFromPositions(bounds.dimensionId, min, max));
+      }
+    }
+  }
+  return chunks;
+}
 function rotateRelative(vector, rotation) {
   switch (rotation) {
     case 90:
@@ -145,46 +169,14 @@ function flipRelative(vector, flipX, flipZ) {
     z: flipZ ? -vector.z : vector.z
   };
 }
-function* cuboidEdgePoints(bounds, step = 2) {
-  const pushed = /* @__PURE__ */ new Set();
-  const maybePush = (point) => {
-    const key = vectorKey(point);
-    if (!pushed.has(key)) {
-      pushed.add(key);
-      return point;
-    }
-    return void 0;
-  };
-  for (let x = bounds.min.x; x <= bounds.max.x; x += step) {
-    for (const y of [bounds.min.y, bounds.max.y]) {
-      for (const z of [bounds.min.z, bounds.max.z]) {
-        const point = maybePush({ x, y, z });
-        if (point) yield point;
-      }
-    }
-  }
-  for (let y = bounds.min.y; y <= bounds.max.y; y += step) {
-    for (const x of [bounds.min.x, bounds.max.x]) {
-      for (const z of [bounds.min.z, bounds.max.z]) {
-        const point = maybePush({ x, y, z });
-        if (point) yield point;
-      }
-    }
-  }
-  for (let z = bounds.min.z; z <= bounds.max.z; z += step) {
-    for (const x of [bounds.min.x, bounds.max.x]) {
-      for (const y of [bounds.min.y, bounds.max.y]) {
-        const point = maybePush({ x, y, z });
-        if (point) yield point;
-      }
-    }
-  }
-}
 
 // src/core/logger.ts
 var OperationLogger = class {
   constructor() {
     __publicField(this, "logs", []);
+  }
+  clear() {
+    this.logs.length = 0;
   }
   record(player, entry) {
     const log = {
@@ -263,6 +255,22 @@ function snapshotBlock(block) {
     waterlogged: block.isWaterlogged
   };
 }
+function snapshotsEqual(a, b) {
+  if (a.typeId !== b.typeId || a.waterlogged !== b.waterlogged) {
+    return false;
+  }
+  const aKeys = Object.keys(a.states);
+  const bKeys = Object.keys(b.states);
+  if (aKeys.length !== bKeys.length) {
+    return false;
+  }
+  for (const key of aKeys) {
+    if (!(key in b.states) || a.states[key] !== b.states[key]) {
+      return false;
+    }
+  }
+  return true;
+}
 function resolveSnapshot(snapshot) {
   return BlockPermutation.resolve(snapshot.typeId, snapshot.states);
 }
@@ -332,12 +340,15 @@ var OperationQueue = class {
     }
     return before === this.jobs.length ? "No queued jobs to cancel." : "Cancelled your queued jobs.";
   }
-  tick() {
+  clear() {
+    this.jobs.length = 0;
+  }
+  tick(players = world2.getPlayers()) {
     const job = this.jobs[0];
     if (!job) {
       return;
     }
-    const player = world2.getPlayers().find((candidate) => candidate.id === job.playerId);
+    const player = players.find((candidate) => candidate.id === job.playerId);
     if (!player) {
       this.jobs.shift();
       return;
@@ -375,22 +386,22 @@ var OperationQueue = class {
   }
   enqueueSet(player, bounds, target, mask) {
     const snapshot = parseBlockInput(target);
-    const job = this.createRegionJob(player, bounds, `set ${target}`, bounds.volume, (block) => {
+    const job = this.createChunkedRegionJob(player, bounds, `set ${target}`, bounds.volume, (block) => {
       if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) return void 0;
       return snapshot;
     });
     this.push(job);
-    return `Queued set over ${bounds.volume} blocks.`;
+    return `Queued ${bounds.volume >= CONFIG.chunkedOperationThreshold ? "chunked set" : "set"} over ${bounds.volume} blocks.`;
   }
   enqueueReplace(player, bounds, from, to, mask) {
     const target = parseBlockInput(to);
-    const job = this.createRegionJob(player, bounds, `replace ${from} ${to}`, bounds.volume, (block) => {
+    const job = this.createChunkedRegionJob(player, bounds, `replace ${from} ${to}`, bounds.volume, (block) => {
       if (block.typeId !== from) return void 0;
       if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) return void 0;
       return target;
     });
     this.push(job);
-    return `Queued replace ${from} -> ${to}.`;
+    return `Queued ${bounds.volume >= CONFIG.chunkedOperationThreshold ? "chunked replace" : "replace"} ${from} -> ${to}.`;
   }
   enqueueClipboardPaste(player, clipboard, placements) {
     const done = { index: 0 };
@@ -411,7 +422,7 @@ var OperationQueue = class {
           if (!block) continue;
           const before = snapshotBlock(block);
           const after = placement.block.snapshot;
-          if (before.typeId !== after.typeId || JSON.stringify(before.states) !== JSON.stringify(after.states)) {
+          if (!snapshotsEqual(before, after)) {
             applySnapshot(block, after);
             job.changes.push({ location: placement.location, before, after: snapshotBlock(block) });
           }
@@ -421,7 +432,7 @@ var OperationQueue = class {
       },
       isDone: () => done.index >= placements.length,
       bounds: () => makeBoundsFromPoints(player.dimension.id, placements.map((placement) => placement.location)),
-      canStoreHistory: () => clipboard.blocks.length <= CONFIG.maxClipboardBlocks
+      canStoreHistory: () => clipboard.totalBlocks <= CONFIG.maxUndoBlocks
     };
     this.push(job);
     return `Queued paste for ${placements.length} blocks.`;
@@ -446,7 +457,7 @@ var OperationQueue = class {
           if (replaceTarget && block.typeId !== replaceTarget) continue;
           if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) continue;
           const before = snapshotBlock(block);
-          if (before.typeId !== target.typeId || JSON.stringify(before.states) !== JSON.stringify(target.states)) {
+          if (!snapshotsEqual(before, target)) {
             applySnapshot(block, target);
             job.changes.push({ location: point, before, after: snapshotBlock(block) });
           }
@@ -456,7 +467,7 @@ var OperationQueue = class {
       },
       isDone: () => done.index >= points.length,
       bounds: () => makeBoundsFromPoints(player.dimension.id, points),
-      canStoreHistory: () => points.length <= CONFIG.maxSelectionBlocks
+      canStoreHistory: () => points.length <= CONFIG.maxUndoBlocks
     };
     this.push(job);
     return `Queued ${type} affecting ${points.length} blocks.`;
@@ -526,8 +537,13 @@ var OperationQueue = class {
     };
     this.push(job);
   }
-  createRegionJob(player, bounds, type, estimated, resolveTarget) {
-    const cursor = { x: bounds.min.x, y: bounds.min.y, z: bounds.min.z, done: false };
+  createChunkedRegionJob(player, bounds, type, estimated, resolveTarget) {
+    const chunkBounds = splitBoundsIntoChunks(bounds);
+    const state = {
+      cursors: (chunkBounds.length > 0 ? chunkBounds : [bounds]).map((chunk) => this.createCursor(chunk)),
+      nextScanIndex: 0,
+      remaining: chunkBounds.length > 0 ? chunkBounds.length : 1
+    };
     const job = {
       id: this.nextId(),
       playerId: player.id,
@@ -539,42 +555,66 @@ var OperationQueue = class {
       changes: [],
       process: (budget) => {
         let count = 0;
-        while (!cursor.done && count < budget) {
-          const block = player.dimension.getBlock({ x: cursor.x, y: cursor.y, z: cursor.z });
-          if (block) {
+        let loadChecks = 0;
+        const dimension = tryGetDimension(bounds.dimensionId);
+        if (!dimension) {
+          state.remaining = 0;
+          return 0;
+        }
+        while (state.remaining > 0 && count < budget && loadChecks < CONFIG.maxChunkLoadChecksPerTick) {
+          const cursor = state.cursors[state.nextScanIndex];
+          state.nextScanIndex = (state.nextScanIndex + 1) % state.cursors.length;
+          if (cursor.done) continue;
+          loadChecks++;
+          if (!this.isChunkLoaded(dimension, cursor.bounds)) continue;
+          while (!cursor.done && count < budget) {
+            const block = dimension.getBlock({ x: cursor.x, y: cursor.y, z: cursor.z });
+            if (!block) {
+              return count;
+            }
             const target = resolveTarget(block);
             if (target) {
               const before = snapshotBlock(block);
-              if (before.typeId !== target.typeId || JSON.stringify(before.states) !== JSON.stringify(target.states)) {
-                block.setPermutation(resolveSnapshot(target));
-                try {
-                  block.setWaterlogged(target.waterlogged);
-                } catch {
-                }
+              if (!snapshotsEqual(before, target)) {
+                applySnapshot(block, target);
                 job.changes.push({ location: block.location, before, after: snapshotBlock(block) });
               }
             }
+            count++;
+            this.advanceCursor(cursor);
           }
-          count++;
-          this.advanceCursor(cursor, bounds);
+          if (cursor.done) {
+            state.remaining--;
+          }
         }
         return count;
       },
-      isDone: () => cursor.done,
+      isDone: () => state.remaining <= 0,
       bounds: () => bounds,
-      canStoreHistory: () => bounds.volume <= CONFIG.maxSelectionBlocks
+      canStoreHistory: () => bounds.volume <= CONFIG.maxUndoBlocks
     };
     return job;
   }
-  advanceCursor(cursor, bounds) {
+  isChunkLoaded(dimension, bounds) {
+    const probe = {
+      x: Math.floor((bounds.min.x + bounds.max.x) / 2),
+      y: Math.floor((bounds.min.y + bounds.max.y) / 2),
+      z: Math.floor((bounds.min.z + bounds.max.z) / 2)
+    };
+    return !!dimension.getBlock(probe);
+  }
+  createCursor(bounds) {
+    return { bounds, x: bounds.min.x, y: bounds.min.y, z: bounds.min.z, done: false };
+  }
+  advanceCursor(cursor) {
     cursor.x++;
-    if (cursor.x <= bounds.max.x) return;
-    cursor.x = bounds.min.x;
+    if (cursor.x <= cursor.bounds.max.x) return;
+    cursor.x = cursor.bounds.min.x;
     cursor.z++;
-    if (cursor.z <= bounds.max.z) return;
-    cursor.z = bounds.min.z;
+    if (cursor.z <= cursor.bounds.max.z) return;
+    cursor.z = cursor.bounds.min.z;
     cursor.y++;
-    if (cursor.y <= bounds.max.y) return;
+    if (cursor.y <= cursor.bounds.max.y) return;
     cursor.done = true;
   }
   push(job) {
@@ -595,6 +635,7 @@ var DEFAULT_BRUSH = {
   radius: 3,
   material: "minecraft:stone"
 };
+var DEFAULT_SET_BLOCK = "minecraft:stone";
 var StateStore = class {
   constructor() {
     __publicField(this, "sessions", /* @__PURE__ */ new Map());
@@ -605,6 +646,7 @@ var StateStore = class {
       session = {
         selection: {},
         brush: { ...DEFAULT_BRUSH },
+        lastSetBlock: DEFAULT_SET_BLOCK,
         previewEnabled: true,
         undoStack: [],
         redoStack: []
@@ -615,6 +657,9 @@ var StateStore = class {
   }
   remove(playerId) {
     this.sessions.delete(playerId);
+  }
+  clearAll() {
+    this.sessions.clear();
   }
   pushUndo(player, entry) {
     const session = this.get(player);
@@ -631,20 +676,35 @@ var StateStore = class {
 };
 
 // src/items/register.ts
+import { system } from "@minecraft/server";
 function registerItemComponents(registry, app2) {
+  const blockUseTicks = /* @__PURE__ */ new Map();
   const isPlayer = (entity) => {
     return typeof entity === "object" && entity !== null && entity.typeId === "minecraft:player";
   };
   registry.registerCustomComponent(COMPONENT_IDS.selectionTool, {
     onUse: (event) => {
       if (!isPlayer(event.source)) return;
-      void app2.ui.showSelection(event.source);
+      if (event.source.isSneaking) {
+        const player = event.source;
+        const startTick = system.currentTick;
+        system.run(() => {
+          if ((blockUseTicks.get(player.id) ?? -1) >= startTick) return;
+          void app2.ui.showSelection(player);
+        });
+      }
     },
     onUseOn: (event) => {
       if (!isPlayer(event.source)) return;
       const player = event.source;
-      const message = player.isSneaking ? app2.selection.setPos2(player, event.block.location) : app2.selection.setPos1(player, event.block.location);
-      app2.tell(player, message);
+      blockUseTicks.set(player.id, system.currentTick);
+      const anchor = floorVector3(event.block.location);
+      try {
+        app2.requireBuildAccess(player);
+        app2.tell(player, app2.selection.setWandPosition(player, anchor));
+      } catch (error) {
+        app2.tell(player, error instanceof Error ? error.message : "Action failed.");
+      }
     }
   });
   registry.registerCustomComponent(COMPONENT_IDS.menuTool, {
@@ -747,18 +807,24 @@ var ClipboardService = class {
     if (!bounds) {
       throw new Error("Selection incomplete.");
     }
-    const blocks = [];
-    for (let x = bounds.min.x; x <= bounds.max.x; x++) {
-      for (let y = bounds.min.y; y <= bounds.max.y; y++) {
-        for (let z = bounds.min.z; z <= bounds.max.z; z++) {
-          const block = player.dimension.getBlock({ x, y, z });
-          if (!block) continue;
-          blocks.push({
-            relative: subVector3(block.location, bounds.min),
-            snapshot: snapshotBlock(block)
-          });
+    const chunks = [];
+    let totalBlocks = 0;
+    for (const chunkBounds of splitBoundsIntoChunks(bounds)) {
+      const chunkBlocks = [];
+      for (let x = chunkBounds.min.x; x <= chunkBounds.max.x; x++) {
+        for (let y = chunkBounds.min.y; y <= chunkBounds.max.y; y++) {
+          for (let z = chunkBounds.min.z; z <= chunkBounds.max.z; z++) {
+            const block = player.dimension.getBlock({ x, y, z });
+            if (!block) continue;
+            chunkBlocks.push({
+              relative: subVector3(block.location, bounds.min),
+              snapshot: snapshotBlock(block)
+            });
+            totalBlocks++;
+          }
         }
       }
+      chunks.push({ bounds: chunkBounds, blocks: chunkBlocks });
     }
     const clipboard = {
       dimensionId: bounds.dimensionId,
@@ -768,7 +834,8 @@ var ClipboardService = class {
         y: bounds.max.y - bounds.min.y + 1,
         z: bounds.max.z - bounds.min.z + 1
       },
-      blocks,
+      chunks,
+      totalBlocks,
       rotation: 0,
       flipX: false,
       flipZ: false
@@ -778,6 +845,13 @@ var ClipboardService = class {
   }
   get(player) {
     return this.state.get(player).clipboard;
+  }
+  describe(player) {
+    const clipboard = this.get(player);
+    if (!clipboard) {
+      return "Clipboard empty.";
+    }
+    return `Clipboard: ${clipboard.totalBlocks} blocks in ${clipboard.chunks.length} chunk(s), rotation ${clipboard.rotation}, flipX=${clipboard.flipX}, flipZ=${clipboard.flipZ}`;
   }
   rotate(player, rotation) {
     const clipboard = this.require(player);
@@ -790,39 +864,56 @@ var ClipboardService = class {
     if (axis === "z") clipboard.flipZ = !clipboard.flipZ;
     return `Clipboard flip updated: X=${clipboard.flipX} Z=${clipboard.flipZ}`;
   }
-  transformedBlocks(player, origin) {
+  transformedBlocks(player, origin, limit) {
     const clipboard = this.require(player);
-    return clipboard.blocks.map((block) => {
-      const flipped = flipRelative(block.relative, clipboard.flipX, clipboard.flipZ);
-      const rotated = rotateRelative(flipped, clipboard.rotation);
-      return { location: addVector3(origin, rotated), block };
-    });
+    const placements = [];
+    for (const chunk of clipboard.chunks) {
+      for (const block of chunk.blocks) {
+        const flipped = flipRelative(block.relative, clipboard.flipX, clipboard.flipZ);
+        const rotated = rotateRelative(flipped, clipboard.rotation);
+        placements.push({ location: addVector3(origin, rotated), block });
+        if (limit !== void 0 && placements.length >= limit) {
+          return placements;
+        }
+      }
+    }
+    return placements;
   }
   saveSchematic(player, rawName) {
     const bounds = this.selection.getBounds(player);
     if (!bounds) {
       throw new Error("Selection incomplete.");
     }
-    const id = this.toStructureId(rawName);
-    const existing = world3.structureManager.get(id);
-    if (existing) {
-      world3.structureManager.delete(existing);
+    const baseId = this.toStructureBaseId(rawName);
+    this.deleteStructureFamily(baseId);
+    const chunkIds = [];
+    for (const chunk of splitBoundsIntoChunks(bounds)) {
+      const offset = subVector3(chunk.min, bounds.min);
+      const id = this.toChunkStructureId(baseId, offset);
+      world3.structureManager.createFromWorld(id, player.dimension, chunk.min, chunk.max, { saveMode: StructureSaveMode.World });
+      chunkIds.push(id);
     }
-    world3.structureManager.createFromWorld(id, player.dimension, bounds.min, bounds.max, { saveMode: StructureSaveMode.World });
-    return `Saved schematic ${rawName} as ${id}.`;
+    return `Saved schematic ${rawName} as ${chunkIds.length} chunk(s).`;
   }
   placeSchematic(player, rawName, origin) {
-    const id = this.toStructureId(rawName);
-    world3.structureManager.place(id, player.dimension, origin);
-    return `Placed schematic ${rawName}.`;
+    const baseId = this.toStructureBaseId(rawName);
+    const chunkIds = this.findStructureFamily(baseId);
+    if (chunkIds.length === 0) {
+      throw new Error(`Schematic ${rawName} was not found.`);
+    }
+    for (const id of chunkIds) {
+      const offset = this.parseChunkOffset(id, baseId);
+      world3.structureManager.place(id, player.dimension, addVector3(origin, offset));
+    }
+    return `Placed schematic ${rawName} from ${chunkIds.length} chunk(s).`;
   }
   deleteSchematic(rawName) {
-    const id = this.toStructureId(rawName);
-    const deleted = world3.structureManager.delete(id);
+    const baseId = this.toStructureBaseId(rawName);
+    const deleted = this.deleteStructureFamily(baseId);
     return deleted ? `Deleted schematic ${rawName}.` : `Schematic ${rawName} was not found.`;
   }
   listSchematics() {
-    return world3.structureManager.getWorldStructureIds().filter((id) => id.startsWith(STRUCTURE_PREFIX)).map((id) => id.slice(STRUCTURE_PREFIX.length));
+    return world3.structureManager.getWorldStructureIds().filter((id) => id.startsWith(STRUCTURE_PREFIX)).map((id) => id.slice(STRUCTURE_PREFIX.length).split("__")[0]).filter((value, index, list) => list.indexOf(value) === index).sort();
   }
   require(player) {
     const clipboard = this.get(player);
@@ -831,9 +922,28 @@ var ClipboardService = class {
     }
     return clipboard;
   }
-  toStructureId(rawName) {
+  toStructureBaseId(rawName) {
     const safe = rawName.toLowerCase().replace(/[^a-z0-9_\-]/g, "_");
     return `${STRUCTURE_PREFIX}${safe}`;
+  }
+  toChunkStructureId(baseId, offset) {
+    return `${baseId}__${offset.x}_${offset.y}_${offset.z}`;
+  }
+  parseChunkOffset(id, baseId) {
+    const raw = id.slice(baseId.length + 2);
+    const [x, y, z] = raw.split("_").map((value) => Number(value));
+    return { x: x || 0, y: y || 0, z: z || 0 };
+  }
+  findStructureFamily(baseId) {
+    return world3.structureManager.getWorldStructureIds().filter((id) => id === baseId || id.startsWith(`${baseId}__`)).sort();
+  }
+  deleteStructureFamily(baseId) {
+    const ids = this.findStructureFamily(baseId);
+    let deleted = false;
+    for (const id of ids) {
+      deleted = world3.structureManager.delete(id) || deleted;
+    }
+    return deleted;
   }
 };
 
@@ -874,55 +984,22 @@ var PreviewService = class {
     this.clipboard = clipboard;
     __publicField(this, "ticks", 0);
   }
-  tick() {
+  tick(players = world4.getPlayers()) {
     this.ticks++;
     if (this.ticks % CONFIG.previewInterval !== 0) {
       return;
     }
-    for (const player of world4.getPlayers()) {
+    for (const player of players) {
       const session = this.state.get(player);
       if (!session.previewEnabled) {
         continue;
       }
-      this.renderSelection(player);
-      this.renderBrush(player);
-      this.renderClipboard(player);
     }
   }
   toggle(player) {
     const session = this.state.get(player);
     session.previewEnabled = !session.previewEnabled;
     return `Preview ${session.previewEnabled ? "enabled" : "disabled"}.`;
-  }
-  renderSelection(player) {
-    const bounds = this.selection.getBounds(player);
-    if (!bounds) return;
-    for (const point of cuboidEdgePoints(bounds, bounds.volume > 4096 ? 4 : 2)) {
-      this.safeParticle(player, PARTICLES.selection, point);
-    }
-  }
-  renderBrush(player) {
-    const target = getPlayerTargetBlock(player);
-    if (!target) return;
-    const brush = this.brush.get(player);
-    for (const point of this.brush.previewPoints(target.location, Math.min(brush.radius, 6))) {
-      this.safeParticle(player, PARTICLES.brush, point);
-    }
-  }
-  renderClipboard(player) {
-    const clipboard = this.clipboard.get(player);
-    const target = getPlayerTargetBlock(player);
-    if (!clipboard || !target) return;
-    const placements = this.clipboard.transformedBlocks(player, target.location).slice(0, 48);
-    for (const placement of placements) {
-      this.safeParticle(player, PARTICLES.clipboard, placement.location);
-    }
-  }
-  safeParticle(player, particleId, location) {
-    try {
-      player.dimension.spawnParticle(particleId, { x: location.x + 0.5, y: location.y + 0.5, z: location.z + 0.5 });
-    } catch {
-    }
   }
 };
 
@@ -935,13 +1012,20 @@ var SelectionService = class {
     const session = this.state.get(player);
     session.selection.dimensionId = player.dimension.id;
     session.selection.pos1 = cloneVector3(position);
+    session.selection.nextWandPosition = 2;
     return `Pos1 set to ${position.x}, ${position.y}, ${position.z}`;
   }
   setPos2(player, position) {
     const session = this.state.get(player);
     session.selection.dimensionId = player.dimension.id;
     session.selection.pos2 = cloneVector3(position);
+    session.selection.nextWandPosition = 1;
     return `Pos2 set to ${position.x}, ${position.y}, ${position.z}`;
+  }
+  setWandPosition(player, position) {
+    const session = this.state.get(player);
+    const which = player.isSneaking ? 2 : session.selection.nextWandPosition ?? 1;
+    return which === 1 ? this.setPos1(player, position) : this.setPos2(player, position);
   }
   clear(player) {
     const session = this.state.get(player);
@@ -961,7 +1045,9 @@ var SelectionService = class {
     if (!bounds) {
       return "Selection incomplete. Set both positions first.";
     }
-    return `Selection ${bounds.min.x},${bounds.min.y},${bounds.min.z} -> ${bounds.max.x},${bounds.max.y},${bounds.max.z} (${bounds.volume} blocks)`;
+    const chunkCount = splitBoundsIntoChunks(bounds).length;
+    const mode = bounds.volume >= CONFIG.chunkedOperationThreshold ? `chunked (${chunkCount} chunks)` : "direct";
+    return `Selection ${bounds.min.x},${bounds.min.y},${bounds.min.z} -> ${bounds.max.x},${bounds.max.y},${bounds.max.z} (${bounds.volume} blocks, ${mode})`;
   }
 };
 
@@ -988,57 +1074,70 @@ var UiService = class {
       else if (response.selection === 3) await this.showBrush(player);
       else if (response.selection === 4) await this.showHistory(player);
       else if (response.selection === 5) await this.showLogs(player);
-      else if (response.selection === 6) this.app.tell(player, this.app.preview.toggle(player));
+      else if (response.selection === 6) this.app.tell(player, this.safeRun(() => this.app.preview.toggle(player)));
       else return;
     }
   }
   async showSelection(player) {
+    if (!this.app.permissions.isOperator(player)) {
+      this.app.tell(player, "Operator permissions required.");
+      return;
+    }
     while (true) {
       const response = await this.showAction(
-        new ActionFormData().title("Selection").body(this.app.selection.describe(player)).button("Set Pos1").button("Set Pos2").button("Clear").button("Back"),
+        new ActionFormData().title("Selection").body(this.app.selection.describe(player)).button("Set Pos1").button("Set Pos2").button("Set Stone").button("Set Air").button("Custom Set").button("Clear").button("Back"),
         player
       );
       if (!response) return;
       const anchor = getPlayerAnchorLocation(player);
-      if (response.selection === 0) this.app.tell(player, this.app.selection.setPos1(player, anchor));
-      else if (response.selection === 1) this.app.tell(player, this.app.selection.setPos2(player, anchor));
-      else if (response.selection === 2) this.app.tell(player, this.app.selection.clear(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.selection.setPos1(player, anchor)));
+      else if (response.selection === 1) this.app.tell(player, this.safeRun(() => this.app.selection.setPos2(player, anchor)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:stone")));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:air")));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.promptSetBlock(player)));
+      else if (response.selection === 5) this.app.tell(player, this.safeRun(() => this.app.selection.clear(player)));
       else return;
     }
   }
   async showEdit(player) {
     while (true) {
+      const hasSelection = !!this.app.selection.getBounds(player);
       const response = await this.showAction(
-        new ActionFormData().title("Edit").body(this.currentMaskText(player)).button("Set Stone").button("Set Air").button("Replace Dirt -> Grass").button("Custom Set").button("Custom Replace").button("Mask").button("Clear Mask").button("Back"),
+        new ActionFormData().title("Edit").body(`${this.currentMaskText(player)}
+${hasSelection ? "Selection ready." : "Selection incomplete."}`).button("Set Stone").button("Set Air").button("Replace Dirt -> Grass").button("Custom Set").button("Custom Replace").button("Mask").button("Clear Mask").button("Back"),
         player
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.queueSet(player, "minecraft:stone"));
-      else if (response.selection === 1) this.app.tell(player, this.app.queueSet(player, "minecraft:air"));
-      else if (response.selection === 2) this.app.tell(player, this.app.queueReplace(player, "minecraft:dirt", "minecraft:grass_block"));
-      else if (response.selection === 3) this.app.tell(player, await this.promptSetBlock(player));
-      else if (response.selection === 4) this.app.tell(player, await this.promptReplace(player));
-      else if (response.selection === 5) this.app.tell(player, await this.promptMask(player));
-      else if (response.selection === 6) this.app.tell(player, this.app.clearMask(player));
+      if (!hasSelection && response.selection <= 4) {
+        this.app.tell(player, "Selection incomplete. Use Selection first.");
+        continue;
+      }
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:stone")));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.app.queueSet(player, "minecraft:air")));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.queueReplace(player, "minecraft:dirt", "minecraft:grass_block")));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.promptSetBlock(player)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.promptReplace(player)));
+      else if (response.selection === 5) this.app.tell(player, await this.safeRunAsync(() => this.promptMask(player)));
+      else if (response.selection === 6) this.app.tell(player, await this.safeRunAsync(() => this.app.clearMask(player)));
       else return;
     }
   }
   async showClipboard(player) {
     while (true) {
       const response = await this.showAction(
-        new ActionFormData().title("Clipboard").body("Copy, paste, transform, save, and load.").button("Copy").button("Cut").button("Paste").button("Rotate 90").button("Flip X").button("Save Schematic").button("Load Schematic").button("Delete Schematic").button("List Schematics").button("Back"),
+        new ActionFormData().title("Clipboard").body(this.app.clipboard.describe(player)).button("Copy").button("Cut").button("Paste").button("Rotate 90").button("Flip X").button("Save Schematic").button("Load Schematic").button("Delete Schematic").button("List Schematics").button("Back"),
         player
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.copy(player, false));
-      else if (response.selection === 1) this.app.tell(player, this.app.copy(player, true));
-      else if (response.selection === 2) this.app.tell(player, this.app.paste(player));
-      else if (response.selection === 3) this.app.tell(player, this.app.rotateClipboard(player, 90));
-      else if (response.selection === 4) this.app.tell(player, this.app.flipClipboard(player, "x"));
-      else if (response.selection === 5) this.app.tell(player, await this.promptSchematicAction(player, "save"));
-      else if (response.selection === 6) this.app.tell(player, await this.promptSchematicAction(player, "load"));
-      else if (response.selection === 7) this.app.tell(player, await this.promptSchematicAction(player, "delete"));
-      else if (response.selection === 8) this.app.tell(player, this.app.clipboard.listSchematics().join(", ") || "No schematics saved.");
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.app.copy(player, false)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.app.copy(player, true)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.paste(player)));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.app.rotateClipboard(player, 90)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.app.flipClipboard(player, "x")));
+      else if (response.selection === 5) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "save")));
+      else if (response.selection === 6) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "load")));
+      else if (response.selection === 7) this.app.tell(player, await this.safeRunAsync(() => this.promptSchematicAction(player, "delete")));
+      else if (response.selection === 8) this.app.tell(player, this.safeRun(() => this.app.clipboard.listSchematics().join(", ") || "No schematics saved."));
       else return;
     }
   }
@@ -1052,11 +1151,11 @@ Radius: ${brush.radius}`).button("Sphere Brush").button("Replace Brush").button(
         player
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, await this.promptBrushSphere(player));
-      else if (response.selection === 1) this.app.tell(player, await this.promptBrushReplace(player));
-      else if (response.selection === 2) this.app.tell(player, this.app.applyBrush(player));
-      else if (response.selection === 3) this.app.tell(player, await this.promptBrushRadius(player));
-      else if (response.selection === 4) this.app.tell(player, this.app.brush.clear(player));
+      if (response.selection === 0) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushSphere(player)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushReplace(player)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.app.applyBrush(player)));
+      else if (response.selection === 3) this.app.tell(player, await this.safeRunAsync(() => this.promptBrushRadius(player)));
+      else if (response.selection === 4) this.app.tell(player, await this.safeRunAsync(() => this.app.brush.clear(player)));
       else return;
     }
   }
@@ -1069,10 +1168,10 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
         player
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.queue.undo(player));
-      else if (response.selection === 1) this.app.tell(player, this.app.queue.redo(player));
-      else if (response.selection === 2) this.app.tell(player, this.app.queue.getStatus());
-      else if (response.selection === 3) this.app.tell(player, this.app.preview.toggle(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.queue.undo(player)));
+      else if (response.selection === 1) this.app.tell(player, this.safeRun(() => this.app.queue.redo(player)));
+      else if (response.selection === 2) this.app.tell(player, this.safeRun(() => this.app.queue.getStatus()));
+      else if (response.selection === 3) this.app.tell(player, this.safeRun(() => this.app.preview.toggle(player)));
       else return;
     }
   }
@@ -1083,9 +1182,9 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
         player
       );
       if (!response) return;
-      if (response.selection === 0) this.app.tell(player, this.app.inspect(player));
-      else if (response.selection === 1) this.app.tell(player, await this.promptRollbackPlayer(player));
-      else if (response.selection === 2) this.app.tell(player, await this.promptRollbackArea(player));
+      if (response.selection === 0) this.app.tell(player, this.safeRun(() => this.app.inspect(player)));
+      else if (response.selection === 1) this.app.tell(player, await this.safeRunAsync(() => this.promptRollbackPlayer(player)));
+      else if (response.selection === 2) this.app.tell(player, await this.safeRunAsync(() => this.promptRollbackArea(player)));
       else return;
     }
   }
@@ -1094,22 +1193,32 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
     return mask ? `Mask: ${mask.raw}` : "Mask: none";
   }
   async promptSetBlock(player) {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
+    const session = this.app.state.get(player);
     const response = await this.showModal(
-      new ModalFormData().title("Custom Set").textField("Block id", "minecraft:stone", { defaultValue: "minecraft:stone" }),
+      new ModalFormData().title("Custom Set").textField("Block id", session.lastSetBlock, { defaultValue: session.lastSetBlock }),
       player
     );
     if (!response || response.canceled) return "Cancelled.";
     const [blockId] = response.formValues;
-    return blockId?.trim() ? this.app.queueSet(player, blockId.trim()) : "No block selected.";
+    const trimmed = blockId?.trim();
+    if (!trimmed) return "No block selected.";
+    session.lastSetBlock = trimmed;
+    return this.safeRun(() => this.app.queueSet(player, trimmed));
   }
   async promptReplace(player) {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
     const response = await this.showModal(
       new ModalFormData().title("Custom Replace").textField("From", "minecraft:dirt", { defaultValue: "minecraft:dirt" }).textField("To", "minecraft:grass_block", { defaultValue: "minecraft:grass_block" }),
       player
     );
     if (!response || response.canceled) return "Cancelled.";
     const [from, to] = response.formValues;
-    return from?.trim() && to?.trim() ? this.app.queueReplace(player, from.trim(), to.trim()) : "Invalid replace inputs.";
+    return from?.trim() && to?.trim() ? this.safeRun(() => this.app.queueReplace(player, from.trim(), to.trim())) : "Invalid replace inputs.";
   }
   async promptMask(player) {
     const response = await this.showModal(
@@ -1121,6 +1230,9 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
     return mask?.trim() ? this.app.setMask(player, mask.trim()) : this.app.clearMask(player);
   }
   async promptSchematicAction(player, action) {
+    if (!this.app.selection.getBounds(player)) {
+      return "Selection incomplete. Use Selection first.";
+    }
     const response = await this.showModal(
       new ModalFormData().title(`Schematic ${action}`).textField("Name", "house", { defaultValue: "house" }),
       player
@@ -1128,9 +1240,9 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
     if (!response || response.canceled) return "Cancelled.";
     const [name] = response.formValues;
     if (!name?.trim()) return "No schematic name entered.";
-    if (action === "save") return this.app.clipboard.saveSchematic(player, name.trim());
-    if (action === "load") return this.app.placeSchematic(player, name.trim());
-    return this.app.clipboard.deleteSchematic(name.trim());
+    if (action === "save") return this.safeRun(() => this.app.clipboard.saveSchematic(player, name.trim()));
+    if (action === "load") return this.safeRun(() => this.app.placeSchematic(player, name.trim()));
+    return this.safeRun(() => this.app.clipboard.deleteSchematic(name.trim()));
   }
   async promptBrushSphere(player) {
     const response = await this.showModal(
@@ -1196,6 +1308,20 @@ Queue: ${this.app.queue.getStatus()}`).button("Undo").button("Redo").button("Que
       return void 0;
     }
   }
+  safeRun(action) {
+    try {
+      return action();
+    } catch (error) {
+      return error instanceof Error ? error.message : "Action failed.";
+    }
+  }
+  async safeRunAsync(action) {
+    try {
+      return await action();
+    } catch (error) {
+      return error instanceof Error ? error.message : "Action failed.";
+    }
+  }
 };
 
 // src/taubuilder.ts
@@ -1213,15 +1339,22 @@ var TauBuilder = class {
     __publicField(this, "ui", new UiService(this));
   }
   startup(event) {
+    this.resetRuntimeState();
     registerCommands(event.customCommandRegistry, this);
     registerItemComponents(event.itemComponentRegistry, this);
   }
   tick() {
-    this.queue.tick();
-    this.preview.tick();
+    const players = world5.getPlayers();
+    this.queue.tick(players);
+    this.preview.tick(players);
   }
   onPlayerLeave(playerId) {
     this.state.remove(playerId);
+  }
+  resetRuntimeState() {
+    this.queue.clear();
+    this.logger.clear();
+    this.state.clearAll();
   }
   tell(player, message) {
     player.sendMessage(message);
@@ -1249,24 +1382,21 @@ var TauBuilder = class {
   queueSet(player, blockId) {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertSelectionWithinLimit(player, bounds.volume);
     return this.queue.enqueueSet(player, bounds, blockId, this.state.get(player).mask);
   }
   queueReplace(player, from, to) {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertSelectionWithinLimit(player, bounds.volume);
     return this.queue.enqueueReplace(player, bounds, from, to, this.state.get(player).mask);
   }
   copy(player, cut) {
     this.requireBuildAccess(player);
     const bounds = this.requireSelection(player);
-    this.assertClipboardWithinLimit(player, bounds.volume);
     const clipboard = this.clipboard.copy(player);
     if (cut) {
       this.queue.enqueueSet(player, bounds, "minecraft:air", void 0);
     }
-    return `${cut ? "Cut" : "Copied"} ${clipboard.blocks.length} blocks.`;
+    return `${cut ? "Cut" : "Copied"} ${clipboard.totalBlocks} blocks.`;
   }
   paste(player, origin) {
     this.requireBuildAccess(player);
@@ -1300,9 +1430,6 @@ var TauBuilder = class {
     }
     const brush = this.brush.get(player);
     const points = this.brush.samplePoints(targetBlock.location, brush.radius);
-    if (points.length > CONFIG.maxSelectionBlocks) {
-      throw new Error(`Brush would affect ${points.length} blocks. Limit is ${CONFIG.maxSelectionBlocks}.`);
-    }
     return this.queue.enqueuePoints(player, `brush ${brush.type}`, points, { typeId: brush.material, states: {}, waterlogged: false }, brush.replaceTarget, this.state.get(player).mask);
   }
   placeSchematic(player, name) {
@@ -1341,27 +1468,19 @@ var TauBuilder = class {
     }
     return bounds;
   }
-  assertSelectionWithinLimit(player, volume) {
-    if (volume > CONFIG.maxSelectionBlocks) {
-      throw new Error(`Selection too large: ${volume}. Limit is ${CONFIG.maxSelectionBlocks}.`);
-    }
-  }
-  assertClipboardWithinLimit(player, blocks) {
-    if (blocks > CONFIG.maxClipboardBlocks) {
-      throw new Error(`Clipboard too large: ${blocks}. Limit is ${CONFIG.maxClipboardBlocks}.`);
-    }
-  }
 };
 
 // src/main.ts
 var app = new TauBuilder();
-system.beforeEvents.startup.subscribe((event) => {
+system2.beforeEvents.startup.subscribe((event) => {
   app.startup(event);
 });
-system.runInterval(() => {
+system2.runInterval(() => {
   app.tick();
 }, 1);
-world5.afterEvents.playerLeave.subscribe((event) => {
+system2.run(() => {
+  world6.sendMessage(`\xA7a${PACK_NAME} v${PACK_VERSION} \xA77by \xA7f${CREATOR}`);
+});
+world6.afterEvents.playerLeave.subscribe((event) => {
   app.onPlayerLeave(event.playerId);
 });
-console.warn("Tau Builder beta systems loaded for 1.26.20+");

@@ -6,6 +6,10 @@ import { boundsContains } from "../utils/vector";
 export class OperationLogger {
   private readonly logs: OperationLogEntry[] = [];
 
+  clear(): void {
+    this.logs.length = 0;
+  }
+
   record(player: Player, entry: HistoryEntry): OperationLogEntry {
     const log: OperationLogEntry = {
       id: entry.id,

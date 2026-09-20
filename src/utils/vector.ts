@@ -1,5 +1,6 @@
 import type { Vector3 } from "@minecraft/server";
 import type { Bounds } from "../types";
+import { CONFIG } from "../config/constants";
 
 export function cloneVector3(vector: Vector3): Vector3 {
   return { x: vector.x, y: vector.y, z: vector.z };
@@ -82,6 +83,26 @@ export function makeBoundsFromPoints(dimensionId: string, points: Vector3[]): Bo
     max: { x: maxX, y: maxY, z: maxZ },
     volume: points.length,
   };
+}
+
+export function splitBoundsIntoChunks(bounds: Bounds, chunkSize = { x: CONFIG.chunkSizeX, y: CONFIG.chunkSizeY, z: CONFIG.chunkSizeZ }): Bounds[] {
+  const chunks: Bounds[] = [];
+
+  for (let y = bounds.min.y; y <= bounds.max.y; y += chunkSize.y) {
+    for (let z = bounds.min.z; z <= bounds.max.z; z += chunkSize.z) {
+      for (let x = bounds.min.x; x <= bounds.max.x; x += chunkSize.x) {
+        const min = { x, y, z };
+        const max = {
+          x: Math.min(x + chunkSize.x - 1, bounds.max.x),
+          y: Math.min(y + chunkSize.y - 1, bounds.max.y),
+          z: Math.min(z + chunkSize.z - 1, bounds.max.z),
+        };
+        chunks.push(boundsFromPositions(bounds.dimensionId, min, max));
+      }
+    }
+  }
+
+  return chunks;
 }
 
 export function rotateRelative(vector: Vector3, rotation: 0 | 90 | 180 | 270): Vector3 {

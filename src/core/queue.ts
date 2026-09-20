@@ -1,8 +1,8 @@
-import { world, type Block, type Player, type Vector3 } from "@minecraft/server";
+import { world, type Block, type Dimension, type Player, type Vector3 } from "@minecraft/server";
 import { CONFIG } from "../config/constants";
 import type { BlockChange, BlockSnapshot, Bounds, ClipboardData, HistoryEntry, MaskRule } from "../types";
-import { applySnapshot, parseBlockInput, resolveSnapshot, snapshotBlock, tryGetDimension } from "../utils/block";
-import { boundsCenter, makeBoundsFromPoints } from "../utils/vector";
+import { applySnapshot, parseBlockInput, snapshotBlock, snapshotsEqual, tryGetDimension } from "../utils/block";
+import { makeBoundsFromPoints, splitBoundsIntoChunks } from "../utils/vector";
 import { OperationLogger } from "./logger";
 import { PermissionService } from "./permissions";
 import { StateStore } from "./state";
@@ -21,6 +21,20 @@ interface QueueJob {
   bounds: () => Bounds;
   canStoreHistory: () => boolean;
   onComplete?: (entry: HistoryEntry) => void;
+}
+
+interface ChunkCursor {
+  bounds: Bounds;
+  x: number;
+  y: number;
+  z: number;
+  done: boolean;
+}
+
+interface ChunkJobState {
+  cursors: ChunkCursor[];
+  nextScanIndex: number;
+  remaining: number;
 }
 
 export class OperationQueue {
@@ -52,13 +66,17 @@ export class OperationQueue {
     return before === this.jobs.length ? "No queued jobs to cancel." : "Cancelled your queued jobs.";
   }
 
-  tick(): void {
+  clear(): void {
+    this.jobs.length = 0;
+  }
+
+  tick(players: Player[] = world.getPlayers()): void {
     const job = this.jobs[0];
     if (!job) {
       return;
     }
 
-    const player = world.getPlayers().find((candidate) => candidate.id === job.playerId);
+    const player = players.find((candidate) => candidate.id === job.playerId);
     if (!player) {
       this.jobs.shift();
       return;
@@ -102,23 +120,23 @@ export class OperationQueue {
 
   enqueueSet(player: Player, bounds: Bounds, target: string, mask?: MaskRule): string {
     const snapshot = parseBlockInput(target);
-    const job = this.createRegionJob(player, bounds, `set ${target}`, bounds.volume, (block) => {
+    const job = this.createChunkedRegionJob(player, bounds, `set ${target}`, bounds.volume, (block) => {
       if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) return undefined;
       return snapshot;
     });
     this.push(job);
-    return `Queued set over ${bounds.volume} blocks.`;
+    return `Queued ${bounds.volume >= CONFIG.chunkedOperationThreshold ? "chunked set" : "set"} over ${bounds.volume} blocks.`;
   }
 
   enqueueReplace(player: Player, bounds: Bounds, from: string, to: string, mask?: MaskRule): string {
     const target = parseBlockInput(to);
-    const job = this.createRegionJob(player, bounds, `replace ${from} ${to}`, bounds.volume, (block) => {
+    const job = this.createChunkedRegionJob(player, bounds, `replace ${from} ${to}`, bounds.volume, (block) => {
       if (block.typeId !== from) return undefined;
       if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) return undefined;
       return target;
     });
     this.push(job);
-    return `Queued replace ${from} -> ${to}.`;
+    return `Queued ${bounds.volume >= CONFIG.chunkedOperationThreshold ? "chunked replace" : "replace"} ${from} -> ${to}.`;
   }
 
   enqueueClipboardPaste(player: Player, clipboard: ClipboardData, placements: { location: Vector3; block: { snapshot: BlockSnapshot } }[]): string {
@@ -140,7 +158,7 @@ export class OperationQueue {
           if (!block) continue;
           const before = snapshotBlock(block);
           const after = placement.block.snapshot;
-          if (before.typeId !== after.typeId || JSON.stringify(before.states) !== JSON.stringify(after.states)) {
+          if (!snapshotsEqual(before, after)) {
             applySnapshot(block, after);
             job.changes.push({ location: placement.location, before, after: snapshotBlock(block) });
           }
@@ -150,7 +168,7 @@ export class OperationQueue {
       },
       isDone: () => done.index >= placements.length,
       bounds: () => makeBoundsFromPoints(player.dimension.id, placements.map((placement) => placement.location)),
-      canStoreHistory: () => clipboard.blocks.length <= CONFIG.maxClipboardBlocks,
+      canStoreHistory: () => clipboard.totalBlocks <= CONFIG.maxUndoBlocks,
     };
     this.push(job);
     return `Queued paste for ${placements.length} blocks.`;
@@ -176,7 +194,7 @@ export class OperationQueue {
           if (replaceTarget && block.typeId !== replaceTarget) continue;
           if (mask && !mask.test({ blockTypeId: block.typeId, y: block.y, isAir: block.isAir })) continue;
           const before = snapshotBlock(block);
-          if (before.typeId !== target.typeId || JSON.stringify(before.states) !== JSON.stringify(target.states)) {
+          if (!snapshotsEqual(before, target)) {
             applySnapshot(block, target);
             job.changes.push({ location: point, before, after: snapshotBlock(block) });
           }
@@ -186,7 +204,7 @@ export class OperationQueue {
       },
       isDone: () => done.index >= points.length,
       bounds: () => makeBoundsFromPoints(player.dimension.id, points),
-      canStoreHistory: () => points.length <= CONFIG.maxSelectionBlocks,
+      canStoreHistory: () => points.length <= CONFIG.maxUndoBlocks,
     };
     this.push(job);
     return `Queued ${type} affecting ${points.length} blocks.`;
@@ -265,14 +283,19 @@ export class OperationQueue {
     this.push(job);
   }
 
-  private createRegionJob(
+  private createChunkedRegionJob(
     player: Player,
     bounds: Bounds,
     type: string,
     estimated: number,
     resolveTarget: (block: Block) => BlockSnapshot | undefined,
   ): QueueJob {
-    const cursor = { x: bounds.min.x, y: bounds.min.y, z: bounds.min.z, done: false };
+    const chunkBounds = splitBoundsIntoChunks(bounds);
+    const state: ChunkJobState = {
+      cursors: (chunkBounds.length > 0 ? chunkBounds : [bounds]).map((chunk) => this.createCursor(chunk)),
+      nextScanIndex: 0,
+      remaining: chunkBounds.length > 0 ? chunkBounds.length : 1,
+    };
     const job: QueueJob = {
       id: this.nextId(),
       playerId: player.id,
@@ -284,44 +307,75 @@ export class OperationQueue {
       changes: [],
       process: (budget) => {
         let count = 0;
-        while (!cursor.done && count < budget) {
-          const block = player.dimension.getBlock({ x: cursor.x, y: cursor.y, z: cursor.z });
-          if (block) {
+        let loadChecks = 0;
+        const dimension = tryGetDimension(bounds.dimensionId);
+        if (!dimension) {
+          state.remaining = 0;
+          return 0;
+        }
+
+        while (state.remaining > 0 && count < budget && loadChecks < CONFIG.maxChunkLoadChecksPerTick) {
+          const cursor = state.cursors[state.nextScanIndex];
+          state.nextScanIndex = (state.nextScanIndex + 1) % state.cursors.length;
+          if (cursor.done) continue;
+
+          loadChecks++;
+          if (!this.isChunkLoaded(dimension, cursor.bounds)) continue;
+
+          while (!cursor.done && count < budget) {
+            const block = dimension.getBlock({ x: cursor.x, y: cursor.y, z: cursor.z });
+            if (!block) {
+              return count;
+            }
+
             const target = resolveTarget(block);
             if (target) {
               const before = snapshotBlock(block);
-              if (before.typeId !== target.typeId || JSON.stringify(before.states) !== JSON.stringify(target.states)) {
-                block.setPermutation(resolveSnapshot(target));
-                try {
-                  block.setWaterlogged(target.waterlogged);
-                } catch {
-                  // Ignore non-waterloggable blocks.
-                }
+              if (!snapshotsEqual(before, target)) {
+                applySnapshot(block, target);
                 job.changes.push({ location: block.location, before, after: snapshotBlock(block) });
               }
             }
+            count++;
+            this.advanceCursor(cursor);
           }
-          count++;
-          this.advanceCursor(cursor, bounds);
+
+          if (cursor.done) {
+            state.remaining--;
+          }
         }
         return count;
       },
-      isDone: () => cursor.done,
+      isDone: () => state.remaining <= 0,
       bounds: () => bounds,
-      canStoreHistory: () => bounds.volume <= CONFIG.maxSelectionBlocks,
+      canStoreHistory: () => bounds.volume <= CONFIG.maxUndoBlocks,
     };
     return job;
   }
 
-  private advanceCursor(cursor: { x: number; y: number; z: number; done: boolean }, bounds: Bounds): void {
+  private isChunkLoaded(dimension: Dimension, bounds: Bounds): boolean {
+    const probe = {
+      x: Math.floor((bounds.min.x + bounds.max.x) / 2),
+      y: Math.floor((bounds.min.y + bounds.max.y) / 2),
+      z: Math.floor((bounds.min.z + bounds.max.z) / 2),
+    };
+
+    return !!dimension.getBlock(probe);
+  }
+
+  private createCursor(bounds: Bounds): ChunkCursor {
+    return { bounds, x: bounds.min.x, y: bounds.min.y, z: bounds.min.z, done: false };
+  }
+
+  private advanceCursor(cursor: ChunkCursor): void {
     cursor.x++;
-    if (cursor.x <= bounds.max.x) return;
-    cursor.x = bounds.min.x;
+    if (cursor.x <= cursor.bounds.max.x) return;
+    cursor.x = cursor.bounds.min.x;
     cursor.z++;
-    if (cursor.z <= bounds.max.z) return;
-    cursor.z = bounds.min.z;
+    if (cursor.z <= cursor.bounds.max.z) return;
+    cursor.z = cursor.bounds.min.z;
     cursor.y++;
-    if (cursor.y <= bounds.max.y) return;
+    if (cursor.y <= cursor.bounds.max.y) return;
     cursor.done = true;
   }
 

@@ -8,6 +8,8 @@ const DEFAULT_BRUSH: BrushConfig = {
   material: "minecraft:stone",
 };
 
+const DEFAULT_SET_BLOCK = "minecraft:stone";
+
 export class StateStore {
   private readonly sessions = new Map<string, PlayerSession>();
 
@@ -17,6 +19,7 @@ export class StateStore {
       session = {
         selection: {},
         brush: { ...DEFAULT_BRUSH },
+        lastSetBlock: DEFAULT_SET_BLOCK,
         previewEnabled: true,
         undoStack: [],
         redoStack: [],
@@ -29,6 +32,10 @@ export class StateStore {
 
   remove(playerId: string): void {
     this.sessions.delete(playerId);
+  }
+
+  clearAll(): void {
+    this.sessions.clear();
   }
 
   pushUndo(player: Player, entry: PlayerSession["undoStack"][number]): void {

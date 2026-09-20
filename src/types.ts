@@ -37,6 +37,7 @@ export interface SelectionState {
   dimensionId?: string;
   pos1?: Vector3;
   pos2?: Vector3;
+  nextWandPosition?: 1 | 2;
 }
 
 export interface ClipboardBlock {
@@ -44,11 +45,17 @@ export interface ClipboardBlock {
   snapshot: BlockSnapshot;
 }
 
+export interface ClipboardChunk {
+  bounds: Bounds;
+  blocks: ClipboardBlock[];
+}
+
 export interface ClipboardData {
   dimensionId: string;
   origin: Vector3;
   size: Vector3;
-  blocks: ClipboardBlock[];
+  chunks: ClipboardChunk[];
+  totalBlocks: number;
   rotation: 0 | 90 | 180 | 270;
   flipX: boolean;
   flipZ: boolean;
@@ -83,6 +90,7 @@ export interface PlayerSession {
   selection: SelectionState;
   mask?: MaskRule;
   brush: BrushConfig;
+  lastSetBlock: string;
   clipboard?: ClipboardData;
   previewEnabled: boolean;
   undoStack: HistoryEntry[];
